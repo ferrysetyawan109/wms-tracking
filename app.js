@@ -211,6 +211,7 @@
       $('#wc').innerHTML = whs.length > 1 ? ['ALL'].concat(whs).map(function (w) { return '<button type="button" class="chip' + (w === po.wh ? ' on' : '') + '" data-w="' + esc(w) + '">' + (w === 'ALL' ? 'Semua gudang' : esc(w)) + '</button>'; }).join('') : (whs[0] ? '<span class="chip on">' + esc(whs[0]) + '</span>' : '');
       Array.prototype.forEach.call(document.querySelectorAll('#wc .chip[data-w]'), function (b) { b.onclick = function () { po.wh = b.getAttribute('data-w'); po.sales = ''; load(); }; });
       var sl = d.sales_list || [], cur = po.sales;
+      $('#ss').parentNode.hidden = !!d.saya; if (d.saya) { po.sales = ''; $('.hd .sub').textContent = u.name + ' · PO milik ' + d.saya[0]; }
       $('#ss').innerHTML = '<option value="">Semua sales</option>' + sl.map(function (n) { return '<option' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('');
       var K = d.ringkas || {};
       $('#tl').innerHTML = [['buka', 'PO OPEN', K.buka, ''], ['urgent', 'URGENT > 14 HARI', K.urgent, 'r'], ['kurang', 'BARANG KURANG', K.kurang, 'y'], ['selesai', 'SELESAI 14 HARI', K.selesai, 'b']].map(function (t) {
@@ -325,7 +326,7 @@
     function draw(d) {
       if (!d) return;
       var whs = d.whs || [], sl = d.sales_list || [], cur = LS.get('wt_ntf_sales') || '';
-      $('#nsw').hidden = !sl.length;
+      $('#nsw').hidden = !sl.length || !!d.saya; if (d.saya) $('#ns').textContent = u.name + ' · notifikasi milik ' + d.saya[0];
       $('#nss').innerHTML = '<option value="">Semua sales</option>' + sl.map(function (n) { return '<option' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('');
       $('#nwc').innerHTML = whs.length > 1 ? ['ALL'].concat(whs).map(function (w) { return '<button type="button" class="chip' + (w === nf.wh ? ' on' : '') + '" data-w="' + esc(w) + '">' + (w === 'ALL' ? 'Semua gudang' : esc(w)) + '</button>'; }).join('') : '';
       var cnt = {ALL: d.items.length}; d.items.forEach(function (x) { if (nf.wh === 'ALL' || x.wh === nf.wh) cnt[x.t] = (cnt[x.t] || 0) + 1; });
