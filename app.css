@@ -112,5 +112,24 @@ ol.tl li{display:flex;gap:12px}
 .nt{text-align:left;cursor:pointer;font:inherit;color:inherit;width:100%;gap:6px}
 .nt.new{border-left:4px solid var(--y)}
 .nt-t{font-weight:700;font-size:16px;display:flex;align-items:center;gap:8px}
-.dot{width:9px;height:9px;border-radius:50%;background:#b23a24;flex:0 0 9px}
+.ndot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#b23a24;flex:0 0 9px}
 #tabs .ic{display:block;height:22px}
+/* ===== Tema "Pasir Pagi" (lebih cerah, beda dari WMS) ===== */
+:root{--bg:#FBF7EE;--card:#FFFFFF;--line:#EFE5D2;--bd:#E2D3B6;--y:#E09A2D;--yt:#241703;--fg:#2b2218;--mut:#6a5d4b}
+.hd{background:#FFFFFF;color:var(--fg);border-bottom:1px solid var(--line)}
+.hd h1{color:#3b2f22}
+.hd .sub,.hd label{color:var(--mut)}
+.srch input{background:#F7F1E4;border-color:var(--bd);color:var(--fg)}
+.srch input::placeholder{color:#8b7b63}
+.chip{border-color:var(--bd);color:var(--fg);background:#FFFFFF}
+#side{background:#FFFFFF;color:var(--fg);border-right:1px solid var(--line)}
+.brand{border-bottom-color:var(--line)}
+.brand small,.who{color:var(--mut)}
+.who{border-top-color:var(--line)}
+.who button{border-color:var(--bd);color:var(--fg)}
+.sidenav a{color:var(--fg)}
+.sidenav a:hover{background:#F7F1E4}
+#tabs{background:#FFFFFF}
+#tabs a.on{color:#9a5f0c}
+.ship{background:#F7F1E4}
+.upd{color:#9a5f0c;font-weight:600}

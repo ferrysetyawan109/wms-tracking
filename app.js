@@ -57,7 +57,21 @@
       return r.data;
     });
   }
-  function logoutLocal() { if (sess) call('logout', [sess.token]).catch(function () {}); sess = null; LS.del('wt_sess'); paintWho(); paintNav(); }
+  function logoutLocal() { if (sess) call('logout', [sess.token]).catch(function () {}); sess = null; LS.del('wt_sess'); CS.wipe(); paintWho(); paintNav(); }
+
+  /* ---------- cache layar (tampil instan, lalu diperbarui dari server) ---------- */
+  var CS = {
+    get: function (k) { try { var o = JSON.parse(localStorage.getItem('wtc:' + k) || 'null'); return o && Date.now() - o.t < 864e5 ? o.d : null; } catch (e) { return null; } },
+    set: function (k, d) {
+      try { localStorage.setItem('wtc:' + k, JSON.stringify({t: Date.now(), d: d})); } catch (e) { CS.prune(10); try { localStorage.setItem('wtc:' + k, JSON.stringify({t: Date.now(), d: d})); } catch (e2) {} }
+      if (Math.random() < 0.1) CS.prune(40);
+    },
+    prune: function (keep) {
+      try { var ks = []; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (k && k.indexOf('wtc:') === 0) { var t = 0; try { t = JSON.parse(localStorage.getItem(k)).t; } catch (e) {} ks.push([t, k]); } }
+        ks.sort(function (a, b) { return b[0] - a[0]; }).slice(keep).forEach(function (x) { localStorage.removeItem(x[1]); }); } catch (e) {}
+    },
+    wipe: function () { CS.prune(0); }
+  };
 
   /* ---------- toast ---------- */
   var tt; function toast(m) { var t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(tt); tt = setTimeout(function () { t.classList.remove('on'); }, 2600); }
@@ -102,9 +116,16 @@
     function cari(auto) {
       var v = $('#q').value.trim(); sessionStorage.setItem('wt_q', v);
       if (v.length < 3) { $('#r').innerHTML = '<div class="empty">Ketik minimal 3 huruf / angka.</div>'; return; }
-      var cached = sessionStorage.getItem('wt_lacak:' + v); if (cached) { try { drawLacak(JSON.parse(cached)); } catch (e) {} } else $('#r').innerHTML = skel(2);
+      var cached = CS.get('lacak:' + v.toLowerCase()); if (cached) drawLacak(cached); else $('#r').innerHTML = skel(2);
       if (!auto) $('#q').blur();
-      pub('lacak', {q: v}).then(function (d) { sessionStorage.setItem('wt_lacak:' + v, JSON.stringify(d)); drawLacak(d); })
+      pub('lacak', {q: v}).then(function (d) {
+        if (d.live_whs && d.live_whs.length) {
+          d.updating = true; drawLacak(d);
+          return pub('lacak2', {q: v, whs: d.live_whs}).then(function (l) { if (l && l.rows && l.rows.length) { CS.set('lacak:' + v.toLowerCase(), l); drawLacak(l); } else { d.updating = false; drawLacak(d); } })
+            .catch(function () { d.updating = false; drawLacak(d); });
+        }
+        CS.set('lacak:' + v.toLowerCase(), d); drawLacak(d);
+      })
         .catch(function (e) { if (isKeyErr(e)) { $('#r').innerHTML = keyBox(e.message); bindKey(function () { cari(); }); return; } if (!cached) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
     }
   }
@@ -113,7 +134,7 @@
     var r = $('#r'); if (!r) return;
     if (d.error) { r.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
     var rows = d.rows || [];
-    var head = '<div class="meta"><span>' + (d.total ? fmt(d.total) + ' hasil untuk “' + esc(d.q) + '”' + (d.total > rows.length ? ' · tampil ' + rows.length : '') : '') + '</span><span>' + (d.now ? 'diperbarui ' + esc(String(d.now).slice(11, 16)) : '') + '</span></div>';
+    var head = '<div class="meta"><span>' + (d.total ? fmt(d.total) + ' hasil untuk “' + esc(d.q) + '”' + (d.total > rows.length ? ' · tampil ' + rows.length : '') : '') + '</span><span>' + (d.snap ? 'status per ' + esc(String(d.snap).slice(11, 16)) + (d.updating ? ' · <b class="upd">memperbarui…</b>' : '') : d.now ? 'diperbarui ' + esc(String(d.now).slice(11, 16)) : '') + '</span></div>';
     var warn = d.ambigu && d.pesan ? '<div class="note">' + esc(d.pesan) + '</div>' : '';
     r.innerHTML = rows.length ? head + warn + rows.map(cardLacak).join('') : warn + '<div class="empty">Tidak ada hasil untuk “' + esc(d.q) + '”.<br>Coba nomor PO, SO, DO, atau sebagian nama customer.</div>';
   }
@@ -153,8 +174,8 @@
     function cari() {
       var v = $('#q').value.trim(); sessionStorage.setItem('wt_sq', v);
       if (v.length < 2) { $('#r').innerHTML = '<div class="empty">Ketik minimal 2 huruf.</div>'; return; }
-      $('#r').innerHTML = skel(3);
-      pub('stok', {q: v, wh: wh}).then(drawStok).catch(function (e) { if (isKeyErr(e)) { $('#r').innerHTML = keyBox(e.message); bindKey(cari); return; } $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
+      var ck = 'stok:' + wh + ':' + v.toLowerCase(), c = CS.get(ck); if (c) drawStok(c); else $('#r').innerHTML = skel(3);
+      pub('stok', {q: v, wh: wh}).then(function (d) { CS.set(ck, d); drawStok(d); }).catch(function (e) { if (isKeyErr(e)) { $('#r').innerHTML = keyBox(e.message); bindKey(cari); return; } $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
     }
   }
   function drawStok(d) {
@@ -201,9 +222,9 @@
     $('#ss').onchange = function () { po.sales = this.value; load(); };
     load();
     function load() {
-      po.q = $('#q').value.trim(); var args = {mode: po.mode, q: po.q, wh: po.wh, sales: po.sales}, key = 'wt_po:' + JSON.stringify(args), c = sessionStorage.getItem(key);
-      if (c) { try { draw(JSON.parse(c)); } catch (e) {} } else $('#r').innerHTML = skel(3);
-      rpc('po.sales', args).then(function (d) { sessionStorage.setItem(key, JSON.stringify(d)); draw(d); })
+      po.q = $('#q').value.trim(); var args = {mode: po.mode, q: po.q, wh: po.wh, sales: po.sales}, key = 'po:' + JSON.stringify(args), c = CS.get(key);
+      if (c) draw(c); else $('#r').innerHTML = skel(3);
+      rpc('po.sales', args).then(function (d) { CS.set(key, d); draw(d); })
         .catch(function (e) { if (!sess) return route(); if (!c) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
     }
     function draw(d) {
@@ -244,9 +265,9 @@
       Array.prototype.forEach.call(document.querySelectorAll('#pc .chip'), function (b) { b.onclick = function () { ana.days = Number(b.getAttribute('data-d')); load(); }; });
     }
     function load() {
-      var key = 'wt_ana:' + ana.wh + ':' + ana.days, c = sessionStorage.getItem(key);
-      if (c) { try { draw(JSON.parse(c)); } catch (e) {} } else { $('#r').innerHTML = skel(3); }
-      rpc('ana.ringkas', {wh: ana.wh, days: ana.days}).then(function (d) { sessionStorage.setItem(key, JSON.stringify(d)); draw(d); })
+      var key = 'ana:' + ana.wh + ':' + ana.days, c = CS.get(key);
+      if (c) draw(c); else { $('#r').innerHTML = skel(3); }
+      rpc('ana.ringkas', {wh: ana.wh, days: ana.days}).then(function (d) { CS.set(key, d); draw(d); })
         .catch(function (e) { if (!sess) return route(); if (!c) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
     }
     function draw(d) {
@@ -338,7 +359,7 @@
       $('#r').innerHTML = rows.length ? rows.map(function (x, i) {
         var t = NT[x.t] || ['Info', 'p-mu'], baru = !opened[x.id];
         return '<button type="button" class="card nt' + (baru ? ' new' : '') + '" data-i="' + i + '"><div class="row"><span class="pill ' + t[1] + '">' + t[0] + '</span><span class="mut">' + esc(x.wh) + ' · ' + esc(nTime(x.at)) + '</span></div>' +
-          '<div class="nt-t">' + (baru ? '<i class="dot" aria-label="baru"></i>' : '') + esc(x.title) + '</div><div class="mut">' + esc(x.text) + '</div>' + (x.sales ? '<div class="mut">Sales: ' + esc(x.sales) + '</div>' : '') + '</button>';
+          '<div class="nt-t">' + (baru ? '<i class="ndot" aria-label="baru"></i>' : '') + esc(x.title) + '</div><div class="mut">' + esc(x.text) + '</div>' + (x.sales ? '<div class="mut">Sales: ' + esc(x.sales) + '</div>' : '') + '</button>';
       }).join('') : '<div class="empty">Belum ada notifikasi' + (nf.t !== 'ALL' || nf.wh !== 'ALL' ? ' untuk saringan ini' : '') + '.</div>';
       Array.prototype.forEach.call(document.querySelectorAll('#r .nt'), function (b) { b.onclick = function () { var x = rows[Number(b.getAttribute('data-i'))]; buka(x); }; });
       /* yang sudah tampil dianggap terbaca (titik "baru" tetap terlihat sampai menu dibuka lagi) */
@@ -364,6 +385,11 @@
   if (KEY) getWhs().catch(function () {});
   /* cek notifikasi: saat app dibuka, saat kembali ke app, dan tiap 5 menit selama app terbuka */
   notifFetch(true);
+  /* siapkan Monitoring PO di belakang layar supaya menu PO langsung tampil */
+  setTimeout(function () {
+    if (!sess) return; var args = {mode: 'buka', q: '', wh: 'ALL', sales: ''}, key = 'po:' + JSON.stringify(args);
+    rpc('po.sales', args).then(function (d) { CS.set(key, d); }).catch(function () {});
+  }, 1200);
   setInterval(function () { if (document.visibilityState === 'visible') notifFetch(true); }, 300000);
   document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') notifFetch(false); });
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
