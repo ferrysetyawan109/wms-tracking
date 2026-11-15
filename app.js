@@ -34,6 +34,16 @@
     if (!KEY) return Promise.reject(new Error('Link tracking belum lengkap. Buka app dari link yang dibagikan Admin gudang (berisi ?t=KODE).'));
     return call('pub', [KEY, name, a || {}]).then(function (r) { if (!r || !r.ok) throw new Error((r && r.error) || 'Gagal memuat'); return r.data; });
   }
+  /* kode salah / kosong: tampilkan isian kode (tanpa harus buka link ulang) */
+  function keyBox(msg) {
+    return '<div class="card" style="max-width:520px;margin:0 auto"><div class="err" style="padding:4px 0">' + esc(msg) + '</div>' +
+      '<form id="kf" class="srch"><input id="kv" autocomplete="off" placeholder="Kode tracking dari Admin gudang" aria-label="Kode tracking" style="background:#fff;color:#2b2218;border-color:#d6c8ad"><button class="btn">Simpan</button></form>' +
+      '<div class="mut">Atau buka ulang link yang dibagikan (berisi ?t=KODE).</div></div>';
+  }
+  function bindKey(again) {
+    var f = document.getElementById('kf'); if (!f) return;
+    f.onsubmit = function (e) { e.preventDefault(); var v = document.getElementById('kv').value.trim(); if (!v) return; KEY = v; LS.set('wt_key', v); whsCache = null; LS.del('wt_whs'); again(); };
+  }
   var sess = (function () { try { var s = JSON.parse(LS.get('wt_sess') || 'null'); return s && s.exp > Date.now() ? s : null; } catch (e) { return null; } })();
   function rpc(name, a) {
     if (!sess) return Promise.reject(new Error('Belum login'));
@@ -86,9 +96,10 @@
       var cached = sessionStorage.getItem('wt_lacak:' + v); if (cached) { try { drawLacak(JSON.parse(cached)); } catch (e) {} } else $('#r').innerHTML = skel(2);
       if (!auto) $('#q').blur();
       pub('lacak', {q: v}).then(function (d) { sessionStorage.setItem('wt_lacak:' + v, JSON.stringify(d)); drawLacak(d); })
-        .catch(function (e) { if (!cached) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
+        .catch(function (e) { if (isKeyErr(e)) { $('#r').innerHTML = keyBox(e.message); bindKey(function () { cari(); }); return; } if (!cached) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
     }
   }
+  function isKeyErr(e) { return /Link tidak berlaku|Link tracking belum lengkap/i.test(String(e && e.message || '')); }
   function drawLacak(d) {
     var r = $('#r'); if (!r) return;
     if (d.error) { r.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
@@ -134,7 +145,7 @@
       var v = $('#q').value.trim(); sessionStorage.setItem('wt_sq', v);
       if (v.length < 2) { $('#r').innerHTML = '<div class="empty">Ketik minimal 2 huruf.</div>'; return; }
       $('#r').innerHTML = skel(3);
-      pub('stok', {q: v, wh: wh}).then(drawStok).catch(function (e) { $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
+      pub('stok', {q: v, wh: wh}).then(drawStok).catch(function (e) { if (isKeyErr(e)) { $('#r').innerHTML = keyBox(e.message); bindKey(cari); return; } $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
     }
   }
   function drawStok(d) {
