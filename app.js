@@ -181,33 +181,40 @@
   }
 
   /* ================= PO SALES ================= */
-  var poMode = 'buka';
+  var po = {mode: 'buka', wh: 'ALL', sales: ''};
   function poView() {
-    if (!sess) return loginView('Monitoring PO', 'Login sales untuk melihat PO dari SO milikmu.');
-    var u = sess.user, all = u.role === 'MANAGER' || u.role === 'KOORDINATOR';
-    view('<header class="hd"><h1>' + (all ? 'Monitoring PO' : 'PO Saya') + '</h1><div class="sub">' + esc(u.name) + ' · ' + esc(roleName(u.role)) + '</div>' +
-      '<form class="srch" id="f" role="search"><input id="q" enterkeyhint="search" placeholder="Cari PO, SO, customer, barang" aria-label="Cari PO"><button class="btn">Cari</button></form></header>' +
+    if (!sess) return loginView('Monitoring PO', 'Login dengan akun WMS (akun sales gudang / manager).');
+    var u = sess.user, mgr = u.role === 'MANAGER' || u.role === 'KOORDINATOR';
+    view('<header class="hd"><h1>Monitoring PO</h1><div class="sub">' + esc(u.name) + ' · ' + esc(roleName(u.role)) + '</div>' +
+      '<form class="srch" id="f" role="search"><input id="q" enterkeyhint="search" placeholder="Cari PO, SO, customer, barang" aria-label="Cari PO"><button class="btn">Cari</button></form>' +
+      '<div class="chips" id="wc"></div><div class="srch"><label for="ss" style="position:absolute;left:-9999px">Nama sales</label><select id="ss" class="chip" style="height:44px;min-width:0;flex:1;border-radius:12px"><option value="">Semua sales</option></select></div></header>' +
       '<section class="body"><div class="tiles" id="tl">' + skel(1) + '</div><div class="chips" id="mc"></div><div id="r"></div></section>');
     var modes = [['buka', 'Open'], ['urgent', 'Urgent'], ['kurang', 'Kurang'], ['selesai', 'Selesai']];
-    var drawModes = function () { $('#mc').innerHTML = modes.map(function (m) { return '<button type="button" class="chip' + (m[0] === poMode ? ' on' : '') + '" data-m="' + m[0] + '">' + m[1] + '</button>'; }).join('');
-      Array.prototype.forEach.call(document.querySelectorAll('#mc .chip'), function (b) { b.onclick = function () { poMode = b.getAttribute('data-m'); drawModes(); load(); }; }); };
+    var drawModes = function () { $('#mc').innerHTML = modes.map(function (m) { return '<button type="button" class="chip' + (m[0] === po.mode ? ' on' : '') + '" data-m="' + m[0] + '">' + m[1] + '</button>'; }).join('');
+      Array.prototype.forEach.call(document.querySelectorAll('#mc .chip'), function (b) { b.onclick = function () { po.mode = b.getAttribute('data-m'); drawModes(); load(); }; }); };
     drawModes(); $('#f').onsubmit = function (e) { e.preventDefault(); $('#q').blur(); load(); };
+    $('#ss').onchange = function () { po.sales = this.value; load(); };
     load();
     function load() {
-      var key = 'wt_po:' + poMode + ':' + $('#q').value.trim(), c = sessionStorage.getItem(key);
+      var args = {mode: po.mode, q: $('#q').value.trim(), wh: po.wh, sales: po.sales}, key = 'wt_po:' + JSON.stringify(args), c = sessionStorage.getItem(key);
       if (c) { try { draw(JSON.parse(c)); } catch (e) {} } else $('#r').innerHTML = skel(3);
-      rpc('po.sales', {mode: poMode, q: $('#q').value.trim()}).then(function (d) { sessionStorage.setItem(key, JSON.stringify(d)); draw(d); })
+      rpc('po.sales', args).then(function (d) { sessionStorage.setItem(key, JSON.stringify(d)); draw(d); })
         .catch(function (e) { if (!sess) return route(); if (!c) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
     }
     function draw(d) {
+      var whs = d.whs || [];
+      $('#wc').innerHTML = whs.length > 1 ? ['ALL'].concat(whs).map(function (w) { return '<button type="button" class="chip' + (w === po.wh ? ' on' : '') + '" data-w="' + esc(w) + '">' + (w === 'ALL' ? 'Semua gudang' : esc(w)) + '</button>'; }).join('') : (whs[0] ? '<span class="chip on">' + esc(whs[0]) + '</span>' : '');
+      Array.prototype.forEach.call(document.querySelectorAll('#wc .chip[data-w]'), function (b) { b.onclick = function () { po.wh = b.getAttribute('data-w'); po.sales = ''; load(); }; });
+      var sl = d.sales_list || [], cur = po.sales;
+      $('#ss').innerHTML = '<option value="">Semua sales</option>' + sl.map(function (n) { return '<option' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('');
       var K = d.ringkas || {};
       $('#tl').innerHTML = [['buka', 'PO OPEN', K.buka, ''], ['urgent', 'URGENT > 14 HARI', K.urgent, 'r'], ['kurang', 'BARANG KURANG', K.kurang, 'y'], ['selesai', 'SELESAI 14 HARI', K.selesai, 'b']].map(function (t) {
         return '<button type="button" class="tile ' + t[3] + '" data-m="' + t[0] + '"><span>' + t[1] + '</span><b>' + fmt(t[2]) + '</b></button>'; }).join('');
-      Array.prototype.forEach.call(document.querySelectorAll('#tl .tile'), function (b) { b.onclick = function () { poMode = b.getAttribute('data-m'); drawModes(); load(); }; });
+      Array.prototype.forEach.call(document.querySelectorAll('#tl .tile'), function (b) { b.onclick = function () { po.mode = b.getAttribute('data-m'); drawModes(); load(); }; });
       var rows = d.rows || [];
-      $('#r').innerHTML = rows.length ? '<div class="meta"><span>' + fmt(d.total) + ' PO</span><span>' + esc(String(d.now || '').slice(11, 16)) + '</span></div>' + rows.map(function (p) {
+      $('#r').innerHTML = rows.length ? '<div class="meta"><span>' + fmt(d.total) + ' PO' + (po.sales ? ' · ' + esc(po.sales) : '') + '</span><span>' + esc(String(d.now || '').slice(11, 16)) + '</span></div>' + rows.map(function (p) {
         var bar = '<div class="bar" style="grid-template-columns:repeat(8,1fr)">' + [0, 1, 2, 3, 4, 5, 6, 7].map(function (i) { return '<i class="' + (i < p.stage ? 'd' : i === p.stage ? 'n' : '') + '"></i>'; }).join('') + '</div>';
-        return '<article class="card"><div class="row"><div><div class="t2">PO ' + esc(p.po_no) + '</div><div>' + esc(p.customer || '') + '</div><div class="mut">' + esc(['SO ' + (p.so_no || '-'), p.wh, all && p.sales ? p.sales : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+        return '<article class="card"><div class="row"><div><div class="t2">PO ' + esc(p.po_no) + '</div><div>' + esc(p.customer || '') + '</div><div class="mut">' + esc(['SO ' + (p.so_no || '-'), p.wh, p.sales || ''].filter(Boolean).join(' · ')) + '</div></div>' +
           '<span class="pill ' + (p.urgent ? 'p-er' : 'p-mu') + '">' + fmt(p.umur) + ' hr' + (p.urgent ? ' · urgent' : '') + '</span></div>' + bar +
           '<div class="meta"><span>' + esc(p.kata || '') + (p.eta ? ' · est. ' + esc(tgl(p.eta)) : '') + '</span><span>' + fmt(p.rcv) + ' / ' + fmt(p.qty) + ' diterima</span></div>' +
           (p.items && p.items.length ? '<details><summary class="mut">' + p.n_item + ' barang</summary>' + p.items.map(function (i) { return '<div class="meta"><span>' + esc(i.item) + ' · ' + esc(i.name || '') + '</span><span>' + fmt(i.rcv) + '/' + fmt(i.qty) + '</span></div>'; }).join('') + '</details>' : '') + '</article>';
