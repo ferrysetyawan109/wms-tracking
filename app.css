@@ -104,3 +104,13 @@ ol.tl li{display:flex;gap:12px}
   .grid2{grid-template-columns:1fr 1fr}
 }
 @media(prefers-reduced-motion:reduce){.sk{animation:none}}
+/* notifikasi */
+#tabs{grid-template-columns:repeat(5,1fr)}
+#tabs .ic,.sidenav a{position:relative}
+.bdg{position:absolute;top:-6px;left:14px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#b23a24;color:#fff;font:700 11px/18px 'Barlow',sans-serif;text-align:center}
+.sidenav .bdg{position:static;display:inline-block;margin-left:8px;vertical-align:1px}
+.nt{text-align:left;cursor:pointer;font:inherit;color:inherit;width:100%;gap:6px}
+.nt.new{border-left:4px solid var(--y)}
+.nt-t{font-weight:700;font-size:16px;display:flex;align-items:center;gap:8px}
+.dot{width:9px;height:9px;border-radius:50%;background:#b23a24;flex:0 0 9px}
+#tabs .ic{display:block;height:22px}

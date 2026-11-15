@@ -57,7 +57,7 @@
       return r.data;
     });
   }
-  function logoutLocal() { if (sess) call('logout', [sess.token]).catch(function () {}); sess = null; LS.del('wt_sess'); paintWho(); }
+  function logoutLocal() { if (sess) call('logout', [sess.token]).catch(function () {}); sess = null; LS.del('wt_sess'); paintWho(); paintNav(); }
 
   /* ---------- toast ---------- */
   var tt; function toast(m) { var t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(tt); tt = setTimeout(function () { t.classList.remove('on'); }, 2600); }
@@ -67,12 +67,17 @@
     lacak: '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
     stok: '<path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7"/>',
     po: '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
-    analisa: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'
+    analisa: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    notif: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10.5 20a1.8 1.8 0 0 0 3 0"/>'
   };
-  var MENU = [['lacak', 'Lacak', 'Lacak Pesanan'], ['stok', 'Stok', 'Status Stok'], ['po', 'PO Sales', 'Monitoring PO'], ['analisa', 'Analisa', 'Analisa Barang']];
+  var MENU = [['lacak', 'Lacak', 'Lacak Pesanan'], ['stok', 'Stok', 'Status Stok'], ['po', 'PO Sales', 'Monitoring PO'], ['analisa', 'Analisa', 'Analisa Barang'], ['notif', 'Notif', 'Notifikasi']];
+  var curView = '';
   function paintNav(v) {
-    $('#tabs').innerHTML = MENU.map(function (m) { return '<a href="#' + m[0] + '" class="' + (m[0] === v ? 'on' : '') + '"' + (m[0] === v ? ' aria-current="page"' : '') + '><svg viewBox="0 0 24 24" aria-hidden="true">' + IC[m[0]] + '</svg>' + m[1] + '</a>'; }).join('');
-    $('.sidenav').innerHTML = MENU.map(function (m) { return '<a href="#' + m[0] + '" class="' + (m[0] === v ? 'on' : '') + '">' + m[2] + '</a>'; }).join('');
+    curView = v || curView; v = curView;
+    var n = nUnread(), bd = function (k) { return k === 'notif' && n ? '<b class="bdg" aria-label="' + n + ' belum dibaca">' + (n > 99 ? '99+' : n) + '</b>' : ''; };
+    $('#tabs').innerHTML = MENU.map(function (m) { return '<a href="#' + m[0] + '" class="' + (m[0] === v ? 'on' : '') + '"' + (m[0] === v ? ' aria-current="page"' : '') + '><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true">' + IC[m[0]] + '</svg>' + bd(m[0]) + '</span>' + m[1] + '</a>'; }).join('');
+    $('.sidenav').innerHTML = MENU.map(function (m) { return '<a href="#' + m[0] + '" class="' + (m[0] === v ? 'on' : '') + '">' + m[2] + bd(m[0]) + '</a>'; }).join('');
+    try { if (navigator.setAppBadge) { if (n) navigator.setAppBadge(n); else navigator.clearAppBadge(); } } catch (e) {}
   }
   function paintWho() {
     var w = $('#who'); if (!w) return;
@@ -175,18 +180,18 @@
       call('loginPin', [em, $('#pn').value]).then(function (r) {
         if (!r || !r.ok) throw new Error((r && r.error) || 'Login gagal');
         sess = {token: r.data.token, user: r.data.user, exp: Date.now() + (Number(r.data.ttl) || 21600) * 1000 - 60000};
-        LS.set('wt_sess', JSON.stringify(sess)); LS.set('wt_em', em); paintWho(); route();
+        LS.set('wt_sess', JSON.stringify(sess)); LS.set('wt_em', em); paintWho(); route(); notifFetch(true);
       }).catch(function (er) { toast(er.message); b.disabled = false; b.textContent = 'Masuk'; });
     };
   }
 
   /* ================= PO SALES ================= */
-  var po = {mode: 'buka', wh: 'ALL', sales: ''};
+  var po = {mode: 'buka', wh: 'ALL', sales: '', q: ''};
   function poView() {
     if (!sess) return loginView('Monitoring PO', 'Login dengan akun WMS (akun sales gudang / manager).');
     var u = sess.user, mgr = u.role === 'MANAGER' || u.role === 'KOORDINATOR';
     view('<header class="hd"><h1>Monitoring PO</h1><div class="sub">' + esc(u.name) + ' · ' + esc(roleName(u.role)) + '</div>' +
-      '<form class="srch" id="f" role="search"><input id="q" enterkeyhint="search" placeholder="Cari PO, SO, customer, barang" aria-label="Cari PO"><button class="btn">Cari</button></form>' +
+      '<form class="srch" id="f" role="search"><input id="q" enterkeyhint="search" placeholder="Cari PO, SO, customer, barang" aria-label="Cari PO" value="' + esc(po.q) + '"><button class="btn">Cari</button></form>' +
       '<div class="chips" id="wc"></div><div class="srch"><label for="ss" style="position:absolute;left:-9999px">Nama sales</label><select id="ss" class="chip" style="height:44px;min-width:0;flex:1;border-radius:12px"><option value="">Semua sales</option></select></div></header>' +
       '<section class="body"><div class="tiles" id="tl">' + skel(1) + '</div><div class="chips" id="mc"></div><div id="r"></div></section>');
     var modes = [['buka', 'Open'], ['urgent', 'Urgent'], ['kurang', 'Kurang'], ['selesai', 'Selesai']];
@@ -196,7 +201,7 @@
     $('#ss').onchange = function () { po.sales = this.value; load(); };
     load();
     function load() {
-      var args = {mode: po.mode, q: $('#q').value.trim(), wh: po.wh, sales: po.sales}, key = 'wt_po:' + JSON.stringify(args), c = sessionStorage.getItem(key);
+      po.q = $('#q').value.trim(); var args = {mode: po.mode, q: po.q, wh: po.wh, sales: po.sales}, key = 'wt_po:' + JSON.stringify(args), c = sessionStorage.getItem(key);
       if (c) { try { draw(JSON.parse(c)); } catch (e) {} } else $('#r').innerHTML = skel(3);
       rpc('po.sales', args).then(function (d) { sessionStorage.setItem(key, JSON.stringify(d)); draw(d); })
         .catch(function (e) { if (!sess) return route(); if (!c) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
@@ -277,8 +282,78 @@
     }
   }
 
+
+  /* ================= NOTIFIKASI (tahap 1: lonceng di dalam app) ================= */
+  /* Status baca disimpan per HP + per akun: akun sales yang dipakai bersama tidak saling menghapus. */
+  var NT = {PO: ['PO datang', 'p-ok'], KIRIM: ['Dikirim', 'p-in'], TERIMA: ['Diterima', 'p-ok'], SIAP: ['Siap kirim', 'p-wa']};
+  var nf = {t: 'ALL', wh: 'ALL'}, nBusy = false, nLast = 0, nErr = '';
+  function nUid() { return sess ? String(sess.user.user_id || sess.user.email || sess.user.name || '') : ''; }
+  function nGet(k, d) { if (!sess) return d; try { return JSON.parse(LS.get(k + nUid()) || 'null') || d; } catch (e) { return d; } }
+  function nSet(k, v) { if (sess) LS.set(k + nUid(), JSON.stringify(v)); }
+  function nUnread() { var d = nGet('wt_ntf:', null), rd = nGet('wt_ntf_read:', {}); if (!d || !d.items) return 0; return d.items.filter(function (x) { return !rd[x.id]; }).length; }
+  function nTime(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(s || '')); if (!m) return tgl(s);
+    var t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime(), d = (Date.now() - t) / 60000;
+    if (d < 1) return 'baru saja'; if (d < 60) return Math.round(d) + ' mnt lalu'; if (d < 1440) return Math.round(d / 60) + ' jam lalu'; return tgl(s);
+  }
+  function notifFetch(force) {
+    if (!sess || nBusy || (!force && Date.now() - nLast < 120000)) return Promise.resolve(null);
+    nBusy = true;
+    return rpc('notif.list', {sales: LS.get('wt_ntf_sales') || ''}).then(function (d) {
+      nLast = Date.now();
+      var rd = nGet('wt_ntf_read:', null), first = !rd, keep = {}, day = Date.now() - 86400000;
+      rd = rd || {};
+      (d.items || []).forEach(function (x) {
+        if (first) { var m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(x.at || ''); if (m && new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() < day) rd[x.id] = 1; }
+      });
+      var ids = Object.keys(rd); if (ids.length > 800) { var now = {}; (d.items || []).forEach(function (x) { now[x.id] = 1; }); ids.forEach(function (k) { if (now[k]) keep[k] = 1; }); rd = keep; }
+      nSet('wt_ntf_read:', rd); nSet('wt_ntf:', d); paintNav();
+      if (curView === 'notif' && V.notif.redraw) V.notif.redraw(d);
+      return d;
+    }).catch(function (e) { nErr = e && e.message || ''; return null; }).then(function (d) { nBusy = false; return d; });
+  }
+  function notifView() {
+    if (!sess) return loginView('Notifikasi', 'Login dengan akun WMS (akun sales gudang / manager) untuk melihat notifikasi.');
+    var u = sess.user;
+    view('<header class="hd"><h1>Notifikasi</h1><div class="sub" id="ns">' + esc(u.name) + ' · ' + esc(roleName(u.role)) + '</div>' +
+      '<div class="srch" id="nsw" hidden><label for="nss" style="position:absolute;left:-9999px">Nama sales</label><select id="nss" class="chip" style="height:44px;min-width:0;flex:1;border-radius:12px"></select></div>' +
+      '<div class="chips" id="nwc"></div><div class="chips" id="ntc"></div></header>' +
+      '<section class="body"><div class="row"><span class="mut" id="nm"></span><button type="button" class="chip" id="nrd">Tandai semua dibaca</button></div><div id="r">' + skel(3) + '</div></section>');
+    var opened = nGet('wt_ntf_read:', {}), d0 = nGet('wt_ntf:', null);
+    $('#nrd').onclick = function () { var d = nGet('wt_ntf:', null); if (!d) return; var rd = {}; d.items.forEach(function (x) { rd[x.id] = 1; }); nSet('wt_ntf_read:', rd); opened = rd; paintNav(); draw(d); };
+    $('#nss').onchange = function () { LS.set('wt_ntf_sales', this.value); $('#r').innerHTML = skel(3); notifFetch(true); };
+    function draw(d) {
+      if (!d) return;
+      var whs = d.whs || [], sl = d.sales_list || [], cur = LS.get('wt_ntf_sales') || '';
+      $('#nsw').hidden = !sl.length;
+      $('#nss').innerHTML = '<option value="">Semua sales</option>' + sl.map(function (n) { return '<option' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('');
+      $('#nwc').innerHTML = whs.length > 1 ? ['ALL'].concat(whs).map(function (w) { return '<button type="button" class="chip' + (w === nf.wh ? ' on' : '') + '" data-w="' + esc(w) + '">' + (w === 'ALL' ? 'Semua gudang' : esc(w)) + '</button>'; }).join('') : '';
+      var cnt = {ALL: d.items.length}; d.items.forEach(function (x) { if (nf.wh === 'ALL' || x.wh === nf.wh) cnt[x.t] = (cnt[x.t] || 0) + 1; });
+      $('#ntc').innerHTML = [['ALL', 'Semua']].concat(Object.keys(NT).map(function (k) { return [k, NT[k][0]]; })).map(function (t) { return '<button type="button" class="chip' + (t[0] === nf.t ? ' on' : '') + '" data-t="' + t[0] + '">' + t[1] + (t[0] !== 'ALL' && cnt[t[0]] ? ' · ' + cnt[t[0]] : '') + '</button>'; }).join('');
+      Array.prototype.forEach.call(document.querySelectorAll('#nwc .chip'), function (b) { b.onclick = function () { nf.wh = b.getAttribute('data-w'); draw(d); }; });
+      Array.prototype.forEach.call(document.querySelectorAll('#ntc .chip'), function (b) { b.onclick = function () { nf.t = b.getAttribute('data-t'); draw(d); }; });
+      var rows = d.items.filter(function (x) { return (nf.t === 'ALL' || x.t === nf.t) && (nf.wh === 'ALL' || x.wh === nf.wh); });
+      $('#nm').textContent = rows.length + ' notifikasi · ' + (d.hari || 7) + ' hari terakhir · ' + String(d.now || '').slice(11, 16);
+      $('#r').innerHTML = rows.length ? rows.map(function (x, i) {
+        var t = NT[x.t] || ['Info', 'p-mu'], baru = !opened[x.id];
+        return '<button type="button" class="card nt' + (baru ? ' new' : '') + '" data-i="' + i + '"><div class="row"><span class="pill ' + t[1] + '">' + t[0] + '</span><span class="mut">' + esc(x.wh) + ' · ' + esc(nTime(x.at)) + '</span></div>' +
+          '<div class="nt-t">' + (baru ? '<i class="dot" aria-label="baru"></i>' : '') + esc(x.title) + '</div><div class="mut">' + esc(x.text) + '</div>' + (x.sales ? '<div class="mut">Sales: ' + esc(x.sales) + '</div>' : '') + '</button>';
+      }).join('') : '<div class="empty">Belum ada notifikasi' + (nf.t !== 'ALL' || nf.wh !== 'ALL' ? ' untuk saringan ini' : '') + '.</div>';
+      Array.prototype.forEach.call(document.querySelectorAll('#r .nt'), function (b) { b.onclick = function () { var x = rows[Number(b.getAttribute('data-i'))]; buka(x); }; });
+      /* yang sudah tampil dianggap terbaca (titik "baru" tetap terlihat sampai menu dibuka lagi) */
+      var rd = nGet('wt_ntf_read:', {}); d.items.forEach(function (x) { rd[x.id] = 1; }); nSet('wt_ntf_read:', rd); paintNav();
+    }
+    function buka(x) {
+      if (x.go === 'po') { po.q = x.ref; po.mode = x.full ? 'selesai' : 'buka'; po.wh = 'ALL'; location.hash = '#po'; return; }
+      sessionStorage.setItem('wt_q', x.ref || x.so || ''); location.hash = '#lacak';
+    }
+    notifView.redraw = draw;
+    if (d0) draw(d0);
+    notifFetch(true).then(function (d) { if (!d && !d0) $('#r').innerHTML = '<div class="err">' + esc(nErr || 'Notifikasi belum bisa dimuat. Cek internet lalu buka lagi menu ini.') + '</div>'; });
+  }
+
   /* ---------- router ---------- */
-  var V = {lacak: lacakView, stok: stokView, po: poView, analisa: anaView};
+  var V = {lacak: lacakView, stok: stokView, po: poView, analisa: anaView, notif: notifView};
   function route() {
     var v = (location.hash || '').replace('#', '') || LS.get('wt_view') || 'lacak'; if (!V[v]) v = 'lacak';
     LS.set('wt_view', v); paintNav(v); V[v](); window.scrollTo(0, 0);
@@ -286,5 +361,9 @@
   window.addEventListener('hashchange', route);
   paintWho(); route();
   if (KEY) getWhs().catch(function () {});
+  /* cek notifikasi: saat app dibuka, saat kembali ke app, dan tiap 5 menit selama app terbuka */
+  notifFetch(true);
+  setInterval(function () { if (document.visibilityState === 'visible') notifFetch(true); }, 300000);
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') notifFetch(false); });
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
 })();
