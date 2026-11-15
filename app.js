@@ -16,9 +16,13 @@
   };
 
   /* ---------- kode tracking: ?t=KODE di link, diingat di HP ---------- */
-  var qs = new URLSearchParams(location.search);
-  if (qs.get('t')) LS.set('wt_key', qs.get('t'));
-  var KEY = qs.get('t') || LS.get('wt_key') || C.KEY || '';
+  var qs = new URLSearchParams(location.search), tq = String(qs.get('t') || '').trim();
+  if (/^kode$/i.test(tq)) tq = '';   /* contoh di panduan, bukan kode asli */
+  if (/^kode$/i.test(LS.get('wt_key') || '')) LS.del('wt_key');
+  if (tq) LS.set('wt_key', tq);
+  /* kode dipindah dari alamat ke penyimpanan HP: alamat jadi bersih dan tidak "nyangkut" ke kode lama */
+  if (qs.has('t')) { try { qs.delete('t'); history.replaceState(null, '', location.pathname + (qs.toString() ? '?' + qs : '') + location.hash); } catch (e) {} }
+  var KEY = tq || LS.get('wt_key') || C.KEY || '';
 
   /* ---------- server ---------- */
   function call(fn, args) {
