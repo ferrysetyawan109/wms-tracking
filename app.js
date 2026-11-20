@@ -84,7 +84,7 @@
     analisa: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     notif: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10.5 20a1.8 1.8 0 0 0 3 0"/>'
   };
-  var MENU = [['lacak', 'Lacak', 'Lacak Pesanan'], ['stok', 'Stok', 'Status Stok'], ['po', 'PO Sales', 'Monitoring PO'], ['analisa', 'Analisa', 'Analisa Barang'], ['notif', 'Notif', 'Notifikasi']];
+  var MENU = [['lacak', 'Lacak', 'Lacak Pesanan'], ['stok', 'Stok', 'Status Stok'], ['po', 'PO Sales', 'Monitoring PO'], ['analisa', 'Laporan', 'Laporan & Analisa'], ['notif', 'Notif', 'Notifikasi']];
   var curView = '';
   function paintNav(v) {
     curView = v || curView; v = curView;
@@ -250,7 +250,7 @@
   }
 
   /* ================= ANALISA ================= */
-  var ana = {wh: 'ALL', days: 90, list: 'dead'};
+  var ana = {wh: 'ALL', days: 90, list: 'dead', sec: 'barang'};
   function anaView() {
     if (!sess) return loginView('Analisa Barang', 'Khusus Branch Manager / Director. Login dengan akun WMS.');
     var u = sess.user; if (u.role !== 'MANAGER' && u.role !== 'KOORDINATOR') { view('<header class="hd"><h1>Analisa Barang</h1></header><section class="body"><div class="empty">Menu ini khusus Branch Manager / Director.</div></section>'); return; }
@@ -374,8 +374,368 @@
     notifFetch(true).then(function (d) { if (!d && !d0) $('#r').innerHTML = '<div class="err">' + esc(nErr || 'Notifikasi belum bisa dimuat. Cek internet lalu buka lagi menu ini.') + '</div>'; });
   }
 
+  /* ================= LAPORAN OWNER (AnaOwner.gs) =================
+     Enam laporan tambahan untuk Branch Manager / Director. Ditaruh sebagai bagian dari
+     menu Analisa, BUKAN menu baru: #tabs itu grid 4-5 kolom tetap di app.css, jadi menu
+     ke-6 akan turun ke baris kedua dan merusak tab bawah.
+     Server: AnaOwner.gs — own.harian / own.cabang / own.jam / own.ekspedisi /
+     own.internal / own.demand, semuanya izin 'report' dan baca saja. */
+  var ASEC = [['barang', 'Barang'], ['harian', 'Harian'], ['cabang', 'Cabang'],
+              ['jam', 'Jam'], ['eks', 'Ekspedisi'], ['intl', 'Internal'], ['demand', 'Demand']];
+  var OWN = {
+    harian: {fn: 'own.harian', judul: 'Rekap Harian', ket: 'Satu hari penuh dihitung langsung dari tabel DOC, lalu disandingkan dengan angka Laporan Harian.', tgl: 1},
+    cabang: {fn: 'own.cabang', judul: 'DO per Cabang', ket: 'Jumlah DO tiap cabang, satu baris per tanggal.', hari: [7, 14, 30, 60]},
+    jam: {fn: 'own.jam', judul: 'Throughput per Jam', ket: 'Dari input DO sampai penugasan, lalu dikirim dan diterima.', tgl: 1},
+    eks: {fn: 'own.ekspedisi', judul: 'Pemakaian Ekspedisi', ket: 'Berapa banyak kiriman lewat ekspedisi luar, dan ke ekspedisi mana.', hari: [7, 30, 90, 180, 365]},
+    intl: {fn: 'own.internal', judul: 'Kiriman Internal', ket: 'Tugas driver sendiri: siapa, berapa lama, dan mana yang belum ditugaskan.', hari: [1, 7, 14, 30]},
+    demand: {fn: 'own.demand', judul: 'Kebutuhan Barang', ket: 'Pemakaian per bulan, stok sekarang, dan tahan berapa bulan.', bulan: [3, 6, 12, 24]}
+  };
+  var own = {tgl: '', hari: 0, bulan: 6, wh: 'ALL', rinci: ''}, ownRedraw = null;
+
+  function p2(n) { return (n < 10 ? '0' : '') + n; }
+  function hariIni() { var d = new Date(); return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()); }
+  function jjam(j) { return p2(j) + ':00'; }
+  function mnt(m) { m = Math.round(Number(m) || 0); return m < 60 ? m + ' mnt' : Math.floor(m / 60) + ' j ' + p2(m % 60) + ' m'; }
+  function oTiles(a) {
+    return '<div class="tiles">' + a.filter(Boolean).map(function (t) {
+      return '<div class="tile' + (t[3] ? ' ' + t[3] : '') + '"><span>' + esc(t[0]) + '</span><b>' + esc(t[1]) + '</b>' +
+        (t[2] ? '<small>' + esc(t[2]) + '</small>' : '') + '</div>'; }).join('') + '</div>';
+  }
+  function oTab(head, rows, min) {
+    return '<div class="tbl"><table' + (min ? ' style="min-width:' + min + 'px"' : '') + '><thead><tr>' +
+      head.map(function (x) { return '<th' + (x[1] ? ' class="ra"' : '') + '>' + esc(x[0]) + '</th>'; }).join('') +
+      '</tr></thead><tbody>' + (rows.length ? rows.join('') :
+        '<tr><td colspan="' + head.length + '" class="mut">Kosong</td></tr>') + '</tbody></table></div>';
+  }
+  function oCard(judul, isi, kanan) {
+    return '<section class="card"><div class="row" style="flex-wrap:wrap"><h2 class="t1" style="margin:0">' + esc(judul) + '</h2>' +
+      (kanan ? '<span class="mut">' + esc(kanan) + '</span>' : '') + '</div>' + isi + '</section>';
+  }
+  function oBar(pct) {
+    return '<div class="tr" style="height:8px;border-radius:4px;background:#efe7d6;min-width:54px"><i style="display:block;height:8px;border-radius:4px;background:var(--ok);width:' +
+      Math.max(2, Math.min(100, Math.round(pct))) + '%"></i></div>';
+  }
+  function oPil(t, k) { return '<span class="pill ' + k + '">' + esc(t) + '</span>'; }
+  function oArah(v) { var n = Math.round(Number(v) || 0); return oPil((n > 0 ? '+' : '') + n + '%', n > 25 ? 'p-ok' : n < -25 ? 'p-er' : 'p-mu'); }
+  function oTahan(v) { return v >= 99 ? '<span class="mut">lama</span>' : oPil(fmt(v) + ' bln', v < 1 ? 'p-er' : v < 2 ? 'p-wa' : 'p-ok'); }
+
+  function anaNav(cur) {
+    return '<div class="chips" id="asec" style="margin:8px 0 2px">' + ASEC.map(function (s) {
+      return '<button type="button" class="chip' + (s[0] === cur ? ' on' : '') + '" data-s="' + s[0] + '">' + s[1] + '</button>';
+    }).join('') + '</div>';
+  }
+  function anaBind() {
+    Array.prototype.forEach.call(document.querySelectorAll('#asec .chip'), function (b) {
+      b.onclick = function () { ana.sec = b.getAttribute('data-s'); own.rinci = ''; anaRoute(); window.scrollTo(0, 0); };
+    });
+  }
+  /* pintu masuk menu Analisa: bagian "Barang" tetap layar lama (anaView) tanpa diubah */
+  function anaRoute() {
+    if (!sess) return loginView('Laporan & Analisa', 'Khusus Branch Manager / Director. Login dengan akun WMS.');
+    var u = sess.user;
+    if (u.role !== 'MANAGER' && u.role !== 'KOORDINATOR') {
+      view('<header class="hd"><h1>Laporan & Analisa</h1></header><section class="body"><div class="empty">Menu ini khusus Branch Manager / Director.</div></section>');
+      return;
+    }
+    if (!ana.sec || ana.sec === 'barang') {
+      anaView();
+      var h1 = $('#main .hd h1'); if (h1) h1.insertAdjacentHTML('afterend', anaNav('barang'));
+      anaBind(); return;
+    }
+    ownSec();
+  }
+
+  function ownSec() {
+    var k = ana.sec, cfg = OWN[k];
+    if (!cfg) { ana.sec = 'barang'; return anaRoute(); }
+    if (cfg.tgl && !own.tgl) own.tgl = hariIni();
+    if (cfg.hari && cfg.hari.indexOf(own.hari) < 0) own.hari = cfg.hari[1] || cfg.hari[0];
+    view('<header class="hd"><h1>' + esc(cfg.judul) + '</h1>' + anaNav(k) +
+      '<div class="sub">' + esc(cfg.ket) + '</div><div class="chips" id="of"></div><div class="chips" id="ow"></div></header>' +
+      '<section class="body" id="r">' + skel(3) + '</section>');
+    anaBind();
+    load();
+
+    function args() {
+      var a = {wh: own.wh};
+      if (cfg.tgl) a.tgl = own.tgl;
+      if (cfg.hari) a.hari = own.hari;
+      if (cfg.bulan) a.bulan = own.bulan;
+      return a;
+    }
+    function filters(d) {
+      var f = '';
+      if (cfg.tgl) f = '<label for="od" style="position:absolute;left:-9999px">Tanggal</label><input type="date" id="od" class="chip" style="height:36px" value="' + esc(own.tgl) + '" max="' + hariIni() + '">';
+      if (cfg.hari) f = cfg.hari.map(function (n) { return '<button type="button" class="chip' + (n === own.hari ? ' on' : '') + '" data-h="' + n + '">' + n + ' hari</button>'; }).join('');
+      if (cfg.bulan) f = cfg.bulan.map(function (n) { return '<button type="button" class="chip' + (n === own.bulan ? ' on' : '') + '" data-b="' + n + '">' + n + ' bulan</button>'; }).join('');
+      $('#of').innerHTML = f;
+      var whs = ['ALL'].concat(d.whs || []);
+      $('#ow').innerHTML = (d.whs || []).length > 1 ? whs.map(function (w) {
+        return '<button type="button" class="chip' + (w === own.wh ? ' on' : '') + '" data-w="' + esc(w) + '">' +
+          (w === 'ALL' ? 'Semua gudang' : esc(w)) + '</button>'; }).join('') : '';
+      var od = $('#od'); if (od) od.onchange = function () { own.tgl = od.value; own.rinci = ''; load(); };
+      Array.prototype.forEach.call(document.querySelectorAll('#of .chip[data-h]'), function (b) { b.onclick = function () { own.hari = Number(b.getAttribute('data-h')); load(); }; });
+      Array.prototype.forEach.call(document.querySelectorAll('#of .chip[data-b]'), function (b) { b.onclick = function () { own.bulan = Number(b.getAttribute('data-b')); own.rinci = ''; load(); }; });
+      Array.prototype.forEach.call(document.querySelectorAll('#ow .chip'), function (b) { b.onclick = function () { own.wh = b.getAttribute('data-w'); own.rinci = ''; load(); }; });
+    }
+    function load() {
+      var a = args(), key = 'own:' + k + ':' + JSON.stringify(a), c = CS.get(key);
+      if (c) draw(c); else $('#r').innerHTML = skel(3);
+      rpc(cfg.fn, a).then(function (d) { CS.set(key, d); draw(d); })
+        .catch(function (e) { if (!sess) return route(); if (!c) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
+    }
+    function draw(d) {
+      filters(d);
+      ownRedraw = function () { draw(d); };
+      $('#r').innerHTML = k === 'harian' ? drawHarian(d) : k === 'cabang' ? drawCabang(d) :
+        k === 'jam' ? drawJam(d) : k === 'eks' ? drawEks(d) : k === 'intl' ? drawIntl(d) : drawDemand(d);
+      if (k === 'demand') bindDemand(d);
+    }
+  }
+
+  /* --- 1. rekap harian + pemeriksaan apakah Laporan Harian menangkap semuanya --- */
+  function drawHarian(d) {
+    var s = d.semua;
+    var out = oTiles([
+      ['DO', fmt(s.do.n), fmt(s.do.qty) + ' qty'],
+      ['DO SELESAI', fmt(s.do.selesai), fmt(s.do.dikirim) + ' dikirim · ' + fmt(s.do.baru) + ' baru'],
+      ['IT KELUAR', fmt(s.it.n), fmt(s.it.qty) + ' qty', 'b'],
+      ['GR', fmt(s.gr.n), fmt(s.gr.vendor_n) + ' vendor · ' + fmt(s.gr.antar_n) + ' antar gudang'],
+      ['DOKUMEN LAIN', fmt(s.lain_n), 'ADJ / DAMAGE / RETURN', 'y'],
+      ['VOID', fmt(s.void_n), 'tidak dihitung', 'y'],
+      ['TOTAL DOKUMEN', fmt(s.total_dok), 'non-VOID', 'b']]);
+    out += '<div class="row" style="margin:10px 0;align-items:center"><span class="mut">' + esc(tgl(d.tgl)) + '</span>' +
+      (d.cocok ? oPil('Semua gudang cocok', 'p-ok') : oPil((d.beda || []).length + ' gudang ada selisih', 'p-er')) + '</div>';
+    (d.per_gudang || []).forEach(function (g) {
+      var b = g.banding, isi;
+      var judul = (d.whs || []).length > 1 ? 'Pemeriksaan · ' + g.wh : 'Pemeriksaan';
+      if (!b || !b.ada) {
+        isi = '<div class="note">' + (b && b.gagal ? 'Laporan Harian gagal dipanggil: ' + esc(b.gagal) :
+          'Report.gs tidak ada di gudang ini, jadi angka di atas tidak bisa disandingkan. Angkanya sendiri dihitung langsung dari tabel DOC.') + '</div>';
+      } else {
+        var br = [['DO', g.do.n, b.do_count, b.selisih_do],
+                  ['DO + IT keluar', g.do.n + g.it_keluar.n, b.do_count, b.selisih_do_it],
+                  ['GR (semua)', g.gr.n, b.gr_count, b.selisih_gr],
+                  ['GR vendor saja', g.gr.vendor_n, b.gr_count, b.selisih_gr_vendor],
+                  ['Qty keluar', g.do.qty, b.qty_keluar, b.selisih_qty]];
+        isi = '<div style="margin-bottom:8px">' + (!b.selisih_do && !b.selisih_gr ? oPil('COCOK', 'p-ok') : oPil('ADA SELISIH', 'p-er')) + '</div>' +
+          oTab([['Yang dihitung'], ['Dari tabel DOC', 1], ['Laporan Harian', 1], ['Selisih', 1]],
+            br.map(function (x) {
+              return '<tr><td>' + esc(x[0]) + '</td><td class="ra">' + fmt(x[1]) + '</td><td class="ra">' + fmt(x[2]) + '</td><td class="ra">' +
+                (x[3] ? oPil((x[3] > 0 ? '+' : '') + fmt(x[3]), 'p-er') : '<span class="mut">0</span>') + '</td></tr>'; }), 520) +
+          (g.sebab_dugaan || []).map(function (t) { return '<div class="note" style="margin-top:8px">⚠ ' + esc(t) + '</div>'; }).join('') +
+          '<div class="mut" style="margin-top:8px">Kolom kiri dihitung dari baris DOC bertanggal ' + esc(tgl(g.tgl)) +
+          ', VOID tidak ikut. Kalau dua kolom beda, yang kiri yang benar — daftarnya di bawah dan bisa dihitung sendiri.</div>';
+      }
+      out += oCard(judul, isi);
+      var dok = (g.dok || []).map(function (x) {
+        return '<tr><td class="mut">' + (x.jam >= 0 ? jjam(x.jam) : '–') + '</td><td>' +
+          oPil(x.type, x.type === 'DO' ? 'p-in' : x.type === 'GR' ? 'p-ok' : x.type === 'IT' ? 'p-wa' : 'p-mu') +
+          '</td><td><b>' + esc(x.doc_no) + '</b>' + (x.so_no ? '<div class="mut">SO ' + esc(x.so_no) + '</div>' : '') +
+          '</td><td>' + esc(x.party || '–') + (x.antar_wh ? '<div class="mut">dari gudang lain</div>' : '') +
+          '</td><td class="ra">' + fmt(x.qty) + '</td><td class="mut">' + esc(x.status) + '</td></tr>';
+      });
+      out += oCard('Daftar dokumen', oTab([['Jam'], ['Tipe'], ['No dokumen'], ['Pihak'], ['Qty', 1], ['Status']], dok, 620) +
+        ((g.void_dok || []).length ? '<div class="mut" style="margin-top:8px">VOID, tidak dihitung: ' +
+          esc(g.void_dok.map(function (x) { return x.type + ' ' + x.doc_no; }).join(', ')) + '</div>' : ''),
+        (g.dok || []).length + ' dokumen');
+    });
+    return out;
+  }
+
+  /* --- 2. DO per cabang --- */
+  function drawCabang(d) {
+    var dd = d.semua.do, jml = 0;
+    (d.kels || []).forEach(function (kk) { jml += dd[kk]; });
+    var out = oTiles([
+      ['DO', fmt(dd.n), fmt(dd.qty) + ' qty'], ['SELESAI', fmt(dd.selesai), ''],
+      ['DIKIRIM', fmt(dd.dikirim), '', 'b'], ['MASIH BARU', fmt(dd.baru), '', 'y'],
+      ['DALAM PROSES', fmt(dd.proses), '', 'y'], ['DO BALIK', fmt(dd.balik), '', dd.balik ? 'r' : ''],
+      ['STATUS TAK DIKENAL', fmt(dd.lain), '', dd.lain ? 'r' : ''],
+      ['IT KELUAR', fmt(d.semua.it.n), fmt(d.semua.it.qty) + ' qty', 'b']]);
+    out += '<div class="' + (jml === dd.n ? 'mut' : 'note') + '" style="margin:10px 0">Rekonsiliasi: ' + fmt(dd.n) + ' DO = ' +
+      fmt(dd.baru) + ' baru + ' + fmt(dd.proses) + ' proses + ' + fmt(dd.dikirim) + ' dikirim + ' + fmt(dd.selesai) +
+      ' selesai + ' + fmt(dd.balik) + ' balik + ' + fmt(dd.lain) + ' lain = ' + fmt(jml) +
+      (jml === dd.n ? ' ✓ cocok' : ' ✗ TIDAK COCOK, laporkan ini') + '</div>';
+    var whs = d.whs || [];
+    out += oCard('Per tanggal', oTab([['Tanggal'], ['Total DO', 1]].concat(whs.map(function (w) { return [w, 1]; })),
+      (d.harian || []).map(function (b) {
+        return '<tr><td>' + esc(tgl(b.tgl)) + '</td><td class="ra"><b>' + fmt(b.total) + '</b></td>' +
+          whs.map(function (w) { var c = b.wh[w] || {n: 0, selesai: 0};
+            return '<td class="ra">' + fmt(c.n) + '<div class="mut">selesai ' + fmt(c.selesai) + '</div></td>'; }).join('') + '</tr>';
+      }), 320 + whs.length * 100));
+    out += oCard('Ringkasan per cabang', oTab([['Cabang'], ['DO', 1], ['Qty', 1], ['IT keluar', 1], ['Hari aktif', 1]],
+      (d.cabang || []).map(function (x) {
+        return '<tr><td><b>' + esc(x.wh) + '</b><div class="mut">' + esc(x.nama) + '</div></td><td class="ra">' + fmt(x.do.n) +
+          '</td><td class="ra">' + fmt(x.qty) + '</td><td class="ra">' + fmt(x.it.n) + '</td><td class="ra">' + fmt(x.hari_aktif) + '</td></tr>';
+      })));
+    return out;
+  }
+
+  /* --- 3. throughput per jam --- */
+  function drawJam(d) {
+    var puncak = (d.jam || []).reduce(function (a, b) { return b.input > a.input ? b : a; }, {input: 0, jam: 0});
+    var out = oTiles([
+      ['DO DIINPUT', fmt(d.total_do), ''],
+      ['SUDAH DITUGASKAN', fmt(d.lead.n), ''],
+      ['BELUM DITUGASKAN', fmt(d.tanpa_tugas), '', d.tanpa_tugas ? 'y' : ''],
+      ['JAM TERSIBUK', puncak.input ? jjam(puncak.jam) : '–', puncak.input ? fmt(puncak.input) + ' DO diinput' : '', 'b'],
+      ['INPUT KE PENUGASAN', d.lead.n ? mnt(d.lead.median) : '–', 'median'],
+      ['PALING LAMBAT', d.lead.n ? mnt(d.lead.maks) : '–', 'p90 ' + (d.lead.n ? mnt(d.lead.p90) : '–')],
+      ['LEWAT ' + d.batas_lambat + ' MENIT', fmt((d.lambat || []).length), '', (d.lambat || []).length ? 'r' : '']]);
+    out += oCard('Per jam', oTab([['Jam'], ['DO diinput', 1], ['Ditugaskan', 1], ['Dikirim', 1], ['Diterima', 1]],
+      (d.jam || []).filter(function (j) { return j.input || j.tugas || j.kirim || j.terima; }).map(function (j) {
+        return '<tr><td><b>' + jjam(j.jam) + '</b></td><td class="ra">' + fmt(j.input) + '</td><td class="ra">' + fmt(j.tugas) +
+          '</td><td class="ra">' + fmt(j.kirim) + '</td><td class="ra">' + fmt(j.terima) + '</td></tr>';
+      })), esc(tgl(d.tgl)));
+    if ((d.lambat || []).length) {
+      out += oCard('Lama menunggu penugasan', oTab([['No DO'], ['Customer'], ['Diinput'], ['Ditugaskan'], ['Menunggu', 1]],
+        d.lambat.map(function (x) {
+          return '<tr><td><b>' + esc(x.doc_no) + '</b><div class="mut">' + esc(x.wh) + (x.so_no ? ' · SO ' + esc(x.so_no) : '') + '</div></td><td>' +
+            esc(x.party || '–') + '</td><td class="mut">' + esc(String(x.input).slice(11, 16)) + '</td><td class="mut">' +
+            esc(String(x.tugas).slice(11, 16)) + '</td><td class="ra"><b>' + esc(mnt(x.menit)) + '</b></td></tr>';
+        }), 620));
+    }
+    out += '<p class="mut">Jam penugasan untuk kiriman internal diambil dari DRIVER_TASK (planned_at), untuk ekspedisi dari saat manifest dibuat. DRIVER_TASK belum punya kolom waktu pembuatan, jadi angka internal adalah pendekatan.</p>';
+    return out;
+  }
+
+  /* --- 4. pemakaian ekspedisi --- */
+  function drawEks(d) {
+    var s = d.semua;
+    var out = oTiles([
+      ['TOTAL DO', fmt(s.n), ''],
+      ['LEWAT EKSPEDISI', fmt(s.ext), s.pct_ext + '% dari semua DO', 'b'],
+      ['KURIR SENDIRI', fmt(s.int), s.pct_int + '%'],
+      ['BELUM DITENTUKAN', fmt(s.blm), '', s.blm ? 'y' : ''],
+      ['QTY LEWAT EKSPEDISI', fmt(s.qty_ext), 'dari ' + fmt(s.qty) + ' qty'],
+      ['KOLI LEWAT EKSPEDISI', fmt(s.koli_ext), ''],
+      ['NAMA EKSPEDISI', fmt(d.jumlah_carrier), d.jumlah_carrier > 12 ? 'terlalu banyak, perlu disatukan' : '', d.jumlah_carrier > 12 ? 'y' : '']]);
+    out += oCard('Per ekspedisi', oTab([['Ekspedisi'], ['DO', 1], ['Qty', 1], ['Koli', 1], ['Porsi', 1]],
+      (d.carrier || []).map(function (c) {
+        return '<tr><td><b>' + esc(c.nama) + '</b>' + ((c.wh || []).length > 1 ? '<div class="mut">' + esc(c.wh.join(', ')) + '</div>' : '') +
+          '</td><td class="ra">' + fmt(c.n) + '</td><td class="ra">' + fmt(c.qty) + '</td><td class="ra">' + fmt(c.koli) +
+          '</td><td class="ra">' + (s.ext ? Math.round(c.n * 1000 / s.ext) / 10 + '%' : '–') + '</td></tr>';
+      })));
+    if ((d.bulanan || []).length > 1) {
+      out += oCard('Per bulan', oTab([['Bulan'], ['Ekspedisi', 1], ['Kurir sendiri', 1], ['Belum', 1], ['Porsi ekspedisi', 1]],
+        d.bulanan.map(function (b) { var t = b.ext + b.int + b.blm;
+          return '<tr><td><b>' + esc(b.bln) + '</b></td><td class="ra">' + fmt(b.ext) + '</td><td class="ra">' + fmt(b.int) +
+            '</td><td class="ra">' + fmt(b.blm) + '</td><td class="ra">' + (t ? Math.round(b.ext * 1000 / t) / 10 + '%' : '–') + '</td></tr>';
+        }), 560));
+    }
+    if ((d.per_gudang || []).length > 1) {
+      out += oCard('Per cabang', oTab([['Cabang'], ['DO', 1], ['Ekspedisi', 1], ['Kurir sendiri', 1], ['Porsi', 1]],
+        d.per_gudang.map(function (x) {
+          return '<tr><td><b>' + esc(x.wh) + '</b><div class="mut">' + esc(x.nama) + '</div></td><td class="ra">' + fmt(x.n) +
+            '</td><td class="ra">' + fmt(x.ext) + '</td><td class="ra">' + fmt(x.int) + '</td><td class="ra"><b>' + x.pct_ext + '%</b></td></tr>';
+        })));
+    }
+    return out;
+  }
+
+  /* --- 5. kiriman internal --- */
+  function drawIntl(d) {
+    var s = d.semua;
+    var out = oTiles([
+      ['TUGAS DRIVER', fmt(s.tugas), ''],
+      ['SELESAI', fmt(s.selesai), s.tugas ? Math.round(s.selesai * 1000 / s.tugas) / 10 + '%' : ''],
+      ['SEDANG JALAN', fmt(s.jalan), '', 'b'],
+      ['BELUM MULAI', fmt(s.belum), '', s.belum ? 'y' : ''],
+      ['QTY DIANTAR', fmt(s.qty), ''],
+      ['JARAK', fmt(s.km) + ' km', ''],
+      ['DO INTERNAL', fmt(s.do_int), ''],
+      ['BELUM DITUGASKAN', fmt(s.do_tanpa_tugas), '', s.do_tanpa_tugas ? 'r' : '']]);
+    if (s.do_tanpa_tugas) out += '<div class="note" style="margin:10px 0">Ada ' + fmt(s.do_tanpa_tugas) +
+      ' DO internal yang belum punya penugasan driver dan belum diterima. Inilah kiriman yang biasanya terlupa.</div>';
+    out += oCard('Per driver', oTab([['Driver'], ['Tugas', 1], ['Selesai', 1], ['Lama antar', 1], ['Qty', 1], ['Km', 1]],
+      (d.driver || []).map(function (x) {
+        return '<tr><td><b>' + esc(x.nama) + '</b>' + ((x.wh || []).length > 1 ? '<div class="mut">' + esc(x.wh.join(', ')) + '</div>' : '') +
+          '</td><td class="ra">' + fmt(x.tugas) + '</td><td class="ra">' + fmt(x.selesai) + '<div class="mut">' + x.pct_selesai +
+          '%</div></td><td class="ra">' + (x.lama_median ? esc(mnt(x.lama_median)) : '–') + '</td><td class="ra">' + fmt(x.qty) +
+          '</td><td class="ra">' + fmt(x.km) + '</td></tr>';
+      }), 620));
+    if ((d.do_tanpa_tugas || []).length) {
+      out += oCard('DO internal belum ditugaskan', oTab([['No DO'], ['Tanggal'], ['Customer'], ['Qty', 1], ['Status']],
+        d.do_tanpa_tugas.map(function (x) {
+          return '<tr><td><b>' + esc(x.doc_no) + '</b><div class="mut">' + esc(x.wh) + '</div></td><td class="mut">' + esc(tgl(x.tgl)) +
+            '</td><td>' + esc(x.party || '–') + '</td><td class="ra">' + fmt(x.qty) + '</td><td class="mut">' + esc(x.status) + '</td></tr>';
+        }), 560), d.do_tanpa_tugas.length + ' DO');
+    }
+    if ((d.sedang_jalan || []).length) {
+      out += oCard('Sedang jalan', oTab([['Driver'], ['Tujuan'], ['Qty', 1], ['Mulai']],
+        d.sedang_jalan.map(function (x) {
+          return '<tr><td><b>' + esc(x.driver) + '</b><div class="mut">' + esc(x.wh) + '</div></td><td>' + esc(x.party || x.ref || '–') +
+            '</td><td class="ra">' + fmt(x.qty) + '</td><td class="mut">' + esc(String(x.mulai).slice(11, 16)) + '</td></tr>';
+        })));
+    }
+    return out;
+  }
+
+  /* --- 6. kebutuhan barang & demand bulanan --- */
+  function drawDemand(d) {
+    var db = d.demand_bulanan || [];
+    var rata = db.length ? Math.round(db.reduce(function (t, x) { return t + x.qty; }, 0) / db.length) : 0;
+    var maxB = db.reduce(function (m, x) { return Math.max(m, x.qty); }, 0) || 1;
+    var akhir = db.length ? db[db.length - 1] : null;
+    var out = oTiles([
+      ['BARANG BERGERAK', fmt(d.n_item), ''],
+      ['KELUAR BULAN TERAKHIR', fmt(akhir ? akhir.qty : 0), akhir ? akhir.bln : ''],
+      ['RATA PER BULAN', fmt(rata), ''],
+      ['PERLU DIBELI', fmt(d.jumlah_perlu_beli), 'stok tahan < ' + d.tahan_min + ' bulan', d.jumlah_perlu_beli ? 'r' : ''],
+      ['PERMINTAAN NAIK', fmt((d.naik || []).length), 'naik >25%', 'b'],
+      ['PERMINTAAN TURUN', fmt((d.turun || []).length), 'turun >25%', 'y']]);
+    out += oCard('Demand per bulan', oTab([['Bulan'], ['Qty keluar', 1], ['']],
+      db.map(function (b) {
+        return '<tr><td><b>' + esc(b.bln) + '</b></td><td class="ra">' + fmt(b.qty) + '</td><td>' + oBar(b.qty * 100 / maxB) + '</td></tr>';
+      })));
+    if ((d.perlu_beli || []).length) {
+      out += oCard('Perlu dibeli', oTab([['Barang'], ['Rata/bulan', 1], ['Stok', 1], ['Tahan', 1], ['Saran beli', 1]],
+        d.perlu_beli.map(function (x) {
+          return '<tr><td><b>' + esc(x.item) + '</b><div class="mut">' + esc(x.nama || '–') + '</div></td><td class="ra">' + fmt(x.rata_bulan) +
+            '</td><td class="ra">' + fmt(x.stok) + (x.pesanan_buka ? '<div class="mut">pesanan ' + fmt(x.pesanan_buka) + '</div>' : '') +
+            '</td><td class="ra">' + oTahan(x.tahan_bulan) + '</td><td class="ra"><b>' + fmt(x.saran_qty) + '</b>' +
+            (x.uom ? '<div class="mut">' + esc(x.uom) + '</div>' : '') + '</td></tr>';
+        }), 620), 'target stok ' + d.target_bulan + ' bulan');
+    }
+    /* kolom tabel ini TETAP berapa pun rentang bulannya; rincian per bulan dibuka terpisah */
+    var top = (d.top_keluar || []).slice(0, 50);
+    out += oCard('Barang keluar terbanyak',
+      oTab([['Barang'], ['Total', 1], ['Rata/bulan', 1], ['Bln terakhir', 1], ['Arah', 1], ['Stok', 1], ['Tahan', 1], ['']],
+        top.map(function (x, i) {
+          return '<tr><td><b>' + esc(x.item) + '</b><div class="mut">' + esc(x.nama || '–') + '</div></td><td class="ra"><b>' + fmt(x.total) +
+            '</b></td><td class="ra">' + fmt(x.rata_bulan) + '</td><td class="ra">' + fmt(x.bulan_terakhir) + '</td><td class="ra">' +
+            (x.bulan_awal ? oArah(x.arah) : '<span class="mut">–</span>') + '</td><td class="ra">' + fmt(x.stok) + '</td><td class="ra">' +
+            oTahan(x.tahan_bulan) + '</td><td><button type="button" class="chip odr" data-i="' + i + '">Rinci</button></td></tr>';
+        }), 820), (d.bulan || []).length + ' bulan');
+    var r = null;
+    if (own.rinci) { top.forEach(function (x) { if (x.item === own.rinci) r = x; }); }
+    if (r) {
+      var mx = (d.bulan || []).reduce(function (m, b) { return Math.max(m, r.bln[b] || 0); }, 0) || 1;
+      out += oCard('Rincian per bulan · ' + r.item + (r.nama ? ' · ' + r.nama : ''),
+        oTab([['Bulan'], ['Qty keluar', 1], ['']], (d.bulan || []).map(function (b) {
+          return '<tr><td>' + esc(b) + '</td><td class="ra">' + fmt(r.bln[b] || 0) + '</td><td>' + oBar((r.bln[b] || 0) * 100 / mx) + '</td></tr>';
+        })) +
+        '<div class="mut" style="margin-top:8px">Stok ' + fmt(r.stok) + ' · tahan ' +
+        (r.tahan_bulan >= 99 ? 'lama' : fmt(r.tahan_bulan) + ' bulan') +
+        (r.pesanan_buka ? ' · pesanan terbuka ' + fmt(r.pesanan_buka) : '') + '</div>' +
+        '<button type="button" class="chip" id="odx" style="margin-top:8px">Tutup rincian</button>');
+    }
+    out += '<p class="mut">Demand dari LEDGER qty keluar, hanya tipe DO dan IT. DAMAGE, ADJ, dan RETURN tidak dihitung sebagai permintaan pasar. Saran beli = rata-rata per bulan × ' +
+      d.target_bulan + ' − stok + pesanan terbuka.</p>';
+    return out;
+  }
+  function bindDemand(d) {
+    var top = (d.top_keluar || []).slice(0, 50);
+    Array.prototype.forEach.call(document.querySelectorAll('#r .odr'), function (b) {
+      b.onclick = function () { var x = top[Number(b.getAttribute('data-i'))]; own.rinci = x ? x.item : ''; if (ownRedraw) ownRedraw(); };
+    });
+    var xb = $('#odx');
+    if (xb) xb.onclick = function () { own.rinci = ''; if (ownRedraw) ownRedraw(); };
+  }
+
   /* ---------- router ---------- */
-  var V = {lacak: lacakView, stok: stokView, po: poView, analisa: anaView, notif: notifView};
+  var V = {lacak: lacakView, stok: stokView, po: poView, analisa: anaRoute, notif: notifView};
   function route() {
     var v = (location.hash || '').replace('#', '') || LS.get('wt_view') || 'lacak'; if (!V[v]) v = 'lacak';
     LS.set('wt_view', v); paintNav(v); V[v](); window.scrollTo(0, 0);
