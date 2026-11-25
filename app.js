@@ -25,6 +25,13 @@
   var KEY = tq || LS.get('wt_key') || C.KEY || '';
 
   /* ---------- server ---------- */
+  var pendingReads = Object.create(null);
+  function oneRead(key, factory) {
+    if (pendingReads[key]) return pendingReads[key];
+    var promise = factory(); pendingReads[key] = promise;
+    var clear = function () { if (pendingReads[key] === promise) delete pendingReads[key]; };
+    promise.then(clear, clear); return promise;
+  }
   function call(fn, args) {
     if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(String(C.EXEC_URL || ''))) return Promise.reject(new Error('EXEC_URL belum diatur di config.js'));
     var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null, tm = setTimeout(function () { if (ctl) ctl.abort(); }, 45000);
@@ -36,7 +43,8 @@
   }
   function pub(name, a) {
     if (!KEY) return Promise.reject(new Error('Link tracking belum lengkap. Buka app dari link yang dibagikan Admin gudang (berisi ?t=KODE).'));
-    return call('pub', [KEY, name, a || {}]).then(function (r) { if (!r || !r.ok) throw new Error((r && r.error) || 'Gagal memuat'); return r.data; });
+    var req = function () { return call('pub', [KEY, name, a || {}]).then(function (r) { if (!r || !r.ok) throw new Error((r && r.error) || 'Gagal memuat'); return r.data; }); };
+    return oneRead('pub:' + KEY + ':' + name + ':' + JSON.stringify(a || {}), req);
   }
   /* kode salah / kosong: tampilkan isian kode (tanpa harus buka link ulang) */
   function keyBox(msg) {
@@ -51,11 +59,14 @@
   var sess = (function () { try { var s = JSON.parse(LS.get('wt_sess') || 'null'); return s && s.exp > Date.now() ? s : null; } catch (e) { return null; } })();
   function rpc(name, a) {
     if (!sess) return Promise.reject(new Error('Belum login'));
-    return call('rpc', [sess.token, name, a || {}]).then(function (r) {
-      if (r && r.code === 'AUTH') { logoutLocal(); throw new Error('Sesi berakhir, silakan login lagi.'); }
+    var token = sess.token;
+    var req = function () { return call('rpc', [token, name, a || {}]).then(function (r) {
+      if (r && r.code === 'AUTH') { if (sess && sess.token === token) logoutLocal(); throw new Error('Sesi berakhir, silakan login lagi.'); }
       if (!r || !r.ok) throw new Error((r && r.error) || 'Gagal memuat');
       return r.data;
-    });
+    }); };
+    return /^(?:po\.sales|ana\.ringkas|own\.(?:harian|cabang|jam|ekspedisi|internal|demand)|notif\.list)$/.test(name)
+      ? oneRead('rpc:' + token + ':' + name + ':' + JSON.stringify(a || {}), req) : req();
   }
   function logoutLocal() { if (sess) call('logout', [sess.token]).catch(function () {}); sess = null; LS.del('wt_sess'); CS.wipe(); paintWho(); paintNav(); }
 
@@ -84,7 +95,7 @@
     analisa: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     notif: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10.5 20a1.8 1.8 0 0 0 3 0"/>'
   };
-  var MENU = [['lacak', 'Lacak', 'Lacak Pesanan'], ['stok', 'Stok', 'Status Stok'], ['po', 'PO Sales', 'Monitoring PO'], ['analisa', 'Laporan', 'Laporan & Analisa'], ['notif', 'Notif', 'Notifikasi']];
+  var MENU = [['lacak', 'Lacak', 'Lacak Pesanan'], ['stok', 'Stok', 'Status Stok'], ['po', 'PO Sales', 'Monitoring PO'], ['analisa', 'Manager', 'Laporan Manager'], ['notif', 'Notif', 'Notifikasi']];
   var curView = '';
   function paintNav(v) {
     curView = v || curView; v = curView;
@@ -95,7 +106,7 @@
   }
   function paintWho() {
     var w = $('#who'); if (!w) return;
-    w.innerHTML = sess ? esc(sess.user.name) + ' · ' + esc(roleName(sess.user.role)) + '<br><button type="button" id="lo">Keluar</button>' : 'Belum login · menu PO & Analisa butuh login';
+    w.innerHTML = sess ? esc(sess.user.name) + ' · ' + esc(roleName(sess.user.role)) + '<br><button type="button" id="lo">Keluar</button>' : 'Belum login · menu PO & Laporan Manager butuh login';
     var b = $('#lo'); if (b) b.onclick = function () { logoutLocal(); route(); };
   }
   function roleName(r) { return {MANAGER: 'Branch Manager', KOORDINATOR: 'Koordinator', SALES: 'Sales', SALES_ADMIN: 'Sales Admin', ADMIN_WH: 'Admin WH'}[r] || r; }
@@ -107,6 +118,7 @@
   /* ================= LACAK ================= */
   var STEP_LBL = ['Order diterima', 'Divalidasi', 'Disiapkan', 'Siap kirim', 'Dikirim', 'Diterima'];
   function lacakView() {
+    var requestSerial = 0;
     var q = sessionStorage.getItem('wt_q') || qs.get('q') || '';
     view('<header class="hd"><h1>Lacak Pesanan</h1><form class="srch" id="f" role="search"><label for="q" class="sr" style="position:absolute;left:-9999px">Nomor atau nama</label>' +
       '<input id="q" enterkeyhint="search" autocomplete="off" placeholder="No PO, SO, DO, resi, atau nama customer" value="' + esc(q) + '"><button class="btn">Lacak</button></form>' +
@@ -114,14 +126,15 @@
     $('#f').onsubmit = function (e) { e.preventDefault(); cari(); };
     if (q.length >= 3) cari(true); else $('#r').innerHTML = '<div class="empty">Ketik minimal 3 huruf / angka lalu tekan Lacak.</div>';
     function cari(auto) {
-      var v = $('#q').value.trim(); sessionStorage.setItem('wt_q', v);
+      var v = $('#q').value.trim(), requestId = ++requestSerial; sessionStorage.setItem('wt_q', v);
       if (v.length < 3) { $('#r').innerHTML = '<div class="empty">Ketik minimal 3 huruf / angka.</div>'; return; }
       var cached = CS.get('lacak:' + v.toLowerCase()); if (cached) drawLacak(cached); else $('#r').innerHTML = skel(2);
       if (!auto) $('#q').blur();
       pub('lacak', {q: v}).then(function (d) {
+        if (requestId !== requestSerial || curView !== 'lacak') return;
         if (d.live_whs && d.live_whs.length) {
           d.updating = true; drawLacak(d);
-          return pub('lacak2', {q: v, whs: d.live_whs}).then(function (l) { if (l && l.rows && l.rows.length) { CS.set('lacak:' + v.toLowerCase(), l); drawLacak(l); } else { d.updating = false; drawLacak(d); } })
+          return pub('lacak2', {q: v, whs: d.live_whs}).then(function (l) { if (requestId !== requestSerial || curView !== 'lacak') return; if (l && l.rows && l.rows.length) { CS.set('lacak:' + v.toLowerCase(), l); drawLacak(l); } else { d.updating = false; drawLacak(d); } })
             .catch(function () { d.updating = false; drawLacak(d); });
         }
         CS.set('lacak:' + v.toLowerCase(), d); drawLacak(d);
@@ -163,7 +176,15 @@
   function getWhs() { if (whsCache) return Promise.resolve(whsCache); var c = LS.get('wt_whs'); if (c) { try { whsCache = JSON.parse(c); } catch (e) {} }
     var p = pub('info').then(function (d) { whsCache = d.whs || []; LS.set('wt_whs', JSON.stringify(whsCache)); return whsCache; }); return whsCache ? Promise.resolve(whsCache) : p; }
   var LV = {R: ['Ready', 'p-ok'], T: ['Terbatas', 'p-wa'], K: ['Kosong', 'p-er'], P: ['Dipesan', 'p-in']};
+  /* Jangan samakan available/tersedia dengan Stock Today: sumber berbeda. */
+  function stokTampil(w) {
+    var v = w && w.stok_tampil;
+    if (v == null || v === '') v = w && w.stock_today;
+    return v !== undefined && v !== null && v !== '' && isFinite(Number(v)) ? Number(v) : null;
+  }
+  function levelStok(n, dipesan) { return n >= 10 ? 'R' : n > 0 ? 'T' : Number(dipesan) > 0 ? 'P' : 'K'; }
   function stokView() {
+    var requestSerial = 0;
     var q = sessionStorage.getItem('wt_sq') || '', wh = sessionStorage.getItem('wt_swh') || 'ALL';
     view('<header class="hd"><h1>Status Stok</h1><form class="srch" id="f" role="search"><input id="q" enterkeyhint="search" autocomplete="off" placeholder="Kode atau nama barang" value="' + esc(q) + '" aria-label="Kode atau nama barang"><button class="btn">Cari</button></form><div class="chips" id="wc"></div></header><section class="body" id="r"></section>');
     var drawChips = function (list) { $('#wc').innerHTML = [{code: 'ALL', name: 'Semua gudang'}].concat(list || []).map(function (w) { return '<button type="button" class="chip' + (w.code === wh ? ' on' : '') + '" data-w="' + esc(w.code) + '">' + esc(w.code === 'ALL' ? w.name : w.code) + '</button>'; }).join('');
@@ -172,21 +193,24 @@
     $('#f').onsubmit = function (e) { e.preventDefault(); $('#q').blur(); cari(); };
     if (q.length >= 2) cari(); else $('#r').innerHTML = '<div class="empty">Ketik kode atau nama barang, contoh: <b>respirator</b> atau <b>ALS-801N95</b>.</div>';
     function cari() {
-      var v = $('#q').value.trim(); sessionStorage.setItem('wt_sq', v);
+      var v = $('#q').value.trim(), requestId = ++requestSerial; sessionStorage.setItem('wt_sq', v);
       if (v.length < 2) { $('#r').innerHTML = '<div class="empty">Ketik minimal 2 huruf.</div>'; return; }
       var ck = 'stok:' + wh + ':' + v.toLowerCase(), c = CS.get(ck); if (c) drawStok(c); else $('#r').innerHTML = skel(3);
-      pub('stok', {q: v, wh: wh}).then(function (d) { CS.set(ck, d); drawStok(d); }).catch(function (e) { if (isKeyErr(e)) { $('#r').innerHTML = keyBox(e.message); bindKey(cari); return; } $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
+      pub('stok', {q: v, wh: wh, sumber: 'STOCK_TODAY'}).then(function (d) { CS.set(ck, d); if (requestId === requestSerial && curView === 'stok') drawStok(d); }).catch(function (e) { if (isKeyErr(e)) { $('#r').innerHTML = keyBox(e.message); bindKey(cari); return; } $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
     }
   }
   function drawStok(d) {
     var r = $('#r'); if (!r) return; var rows = d.rows || [];
     var at = Object.keys(d.at || {}).map(function (k) { return d.at[k]; }).filter(Boolean).sort().pop() || '';
+    var belumStockToday = false;
+    rows.forEach(function (x) { (x.whs || []).forEach(function (w) { if (stokTampil(w) === null) belumStockToday = true; }); });
     r.innerHTML = rows.length ? '<div class="meta"><span>' + fmt(d.total) + ' barang' + (d.total > rows.length ? ' · tampil ' + rows.length : '') + '</span><span>Stok per ' + esc(tgl(at)) + '</span></div>' + rows.map(function (x) {
-      var lv = LV[x.lvl] || LV.K;
-      return '<article class="card"><div class="row"><div><div class="t2">' + esc(x.item) + '</div><div class="mut">' + esc(x.name) + '</div></div><div style="text-align:right"><span class="pill ' + lv[1] + '">' + lv[0] + '</span><div class="t2" style="margin-top:4px">' + fmt(x.total) + ' <small class="mut">' + esc(x.uom || '') + '</small></div></div></div>' +
-        '<div class="whg">' + x.whs.map(function (w) { var l = LV[w.lvl] || LV.K; return '<div class="' + l[1] + '"><span>' + esc(w.code) + '</span><b>' + fmt(w.tersedia) + '</b><small>' + (w.dipesan ? 'dipesan ' + fmt(w.dipesan) : l[0]) + '</small></div>'; }).join('') + '</div>' +
-        (x.ordered > 0 && x.total <= 0 ? '<div class="mut">Sedang dipesan ' + fmt(x.ordered) + ' ' + esc(x.uom || '') + '</div>' : '') + '</article>';
-    }).join('') + '<p class="mut">Angka = qty tersedia (stok dikurangi yang sudah dipesan SO lain). Ready ≥ 10 · Terbatas 1–9 · Dipesan = sedang PO ke supplier.</p>'
+      var totalTampil = (x.whs || []).reduce(function (n, w) { var s = stokTampil(w); return n + (s === null ? Number(w.tersedia) || 0 : s); }, 0);
+      var lv = LV[levelStok(totalTampil, x.ordered)] || LV.K;
+      return '<article class="card"><div class="row"><div><div class="t2">' + esc(x.item) + '</div><div class="mut">' + esc(x.name) + '</div></div><div style="text-align:right"><span class="pill ' + lv[1] + '">' + lv[0] + '</span><div class="t2" style="margin-top:4px">' + fmt(totalTampil) + ' <small class="mut">' + esc(x.uom || '') + '</small></div></div></div>' +
+        '<div class="whg">' + x.whs.map(function (w) { var s = stokTampil(w), n = s === null ? Number(w.tersedia) || 0 : s, l = LV[levelStok(n, w.dipesan)] || LV.K; return '<div class="' + l[1] + '"><span>' + esc(w.code) + '</span><b>' + fmt(n) + '</b><small>' + (s === null ? 'tersedia (belum Stock Today)' : 'Stock Today') + '</small></div>'; }).join('') + '</div>' +
+        (x.ordered > 0 && totalTampil <= 0 ? '<div class="mut">Sedang dipesan ' + fmt(x.ordered) + ' ' + esc(x.uom || '') + '</div>' : '') + '</article>';
+    }).join('') + '<p class="mut">' + (belumStockToday ? 'Sebagian angka masih tersedia (bukan Stock Today), karena backend TrackApi.gs belum mengirim stok_tampil. ' : 'Stock Tampil mengikuti Stock Today WMS. ') + 'Ready ≥ 10 · Terbatas 1–9 · Dipesan = sedang PO ke supplier.</p>'
       : '<div class="empty">Barang “' + esc(d.q) + '” tidak ditemukan.</div>';
   }
 
@@ -207,7 +231,7 @@
   }
 
   /* ================= PO SALES ================= */
-  var po = {mode: 'buka', wh: 'ALL', sales: '', q: ''};
+  var po = {mode: 'buka', wh: 'ALL', sales: '', q: ''}, poRequestId = 0;
   function poView() {
     if (!sess) return loginView('Monitoring PO', 'Login dengan akun WMS (akun sales gudang / manager).');
     var u = sess.user, mgr = u.role === 'MANAGER' || u.role === 'KOORDINATOR';
@@ -223,8 +247,9 @@
     load();
     function load() {
       po.q = $('#q').value.trim(); var args = {mode: po.mode, q: po.q, wh: po.wh, sales: po.sales}, key = 'po:' + JSON.stringify(args), c = CS.get(key);
+      var requestId = ++poRequestId;
       if (c) draw(c); else $('#r').innerHTML = skel(3);
-      rpc('po.sales', args).then(function (d) { CS.set(key, d); draw(d); })
+      rpc('po.sales', args).then(function (d) { CS.set(key, d); if (requestId === poRequestId && curView === 'po') draw(d); })
         .catch(function (e) { if (!sess) return route(); if (!c) $('#r').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; else toast(e.message); });
     }
     function draw(d) {
@@ -250,11 +275,11 @@
   }
 
   /* ================= ANALISA ================= */
-  var ana = {wh: 'ALL', days: 90, list: 'dead', sec: 'barang'};
+  var ana = {wh: 'ALL', days: 90, list: 'dead', sec: 'harian'};
   function anaView() {
-    if (!sess) return loginView('Analisa Barang', 'Khusus Branch Manager / Director. Login dengan akun WMS.');
-    var u = sess.user; if (u.role !== 'MANAGER' && u.role !== 'KOORDINATOR') { view('<header class="hd"><h1>Analisa Barang</h1></header><section class="body"><div class="empty">Menu ini khusus Branch Manager / Director.</div></section>'); return; }
-    view('<header class="hd"><h1>Analisa Barang</h1><div class="sub">Pergerakan barang keluar per gudang dari Ledger + Stock Today, dihitung otomatis tiap jam.</div><div class="chips" id="wc"></div><div class="chips" id="pc"></div></header>' +
+    if (!sess) return loginView('Laporan Manager', 'Khusus Branch Manager / Director. Login dengan akun WMS.');
+    var u = sess.user; if (u.role !== 'MANAGER' && u.role !== 'KOORDINATOR') { view('<header class="hd"><h1>Laporan Manager</h1></header><section class="body"><div class="empty">Menu ini khusus Branch Manager / Director.</div></section>'); return; }
+    view('<header class="hd"><h1>Laporan Manager</h1><div class="sub">Analisa barang · pergerakan barang keluar per gudang dari Ledger + Stock Today, dihitung otomatis tiap jam.</div><div class="chips" id="wc"></div><div class="chips" id="pc"></div></header>' +
       '<section class="body" id="r">' + skel(3) + '</section>');
     load();
     function chips(d) {
@@ -380,8 +405,8 @@
      ke-6 akan turun ke baris kedua dan merusak tab bawah.
      Server: AnaOwner.gs — own.harian / own.cabang / own.jam / own.ekspedisi /
      own.internal / own.demand, semuanya izin 'report' dan baca saja. */
-  var ASEC = [['barang', 'Barang'], ['harian', 'Harian'], ['cabang', 'Cabang'],
-              ['jam', 'Jam'], ['eks', 'Ekspedisi'], ['intl', 'Internal'], ['demand', 'Demand']];
+  var ASEC = [['harian', 'Harian'], ['cabang', 'Cabang'], ['jam', 'Jam'],
+               ['eks', 'Ekspedisi'], ['intl', 'Internal'], ['demand', 'Demand'], ['barang', 'Barang']];
   var OWN = {
     harian: {fn: 'own.harian', judul: 'Rekap Harian', ket: 'Satu hari penuh dihitung langsung dari tabel DOC, lalu disandingkan dengan angka Laporan Harian.', tgl: 1},
     cabang: {fn: 'own.cabang', judul: 'DO per Cabang', ket: 'Jumlah DO tiap cabang, satu baris per tanggal.', hari: [7, 14, 30, 60]},
@@ -431,10 +456,10 @@
   }
   /* pintu masuk menu Analisa: bagian "Barang" tetap layar lama (anaView) tanpa diubah */
   function anaRoute() {
-    if (!sess) return loginView('Laporan & Analisa', 'Khusus Branch Manager / Director. Login dengan akun WMS.');
+    if (!sess) return loginView('Laporan Manager', 'Khusus Branch Manager / Director. Login dengan akun WMS.');
     var u = sess.user;
     if (u.role !== 'MANAGER' && u.role !== 'KOORDINATOR') {
-      view('<header class="hd"><h1>Laporan & Analisa</h1></header><section class="body"><div class="empty">Menu ini khusus Branch Manager / Director.</div></section>');
+      view('<header class="hd"><h1>Laporan Manager</h1></header><section class="body"><div class="empty">Menu ini khusus Branch Manager / Director.</div></section>');
       return;
     }
     if (!ana.sec || ana.sec === 'barang') {
@@ -450,7 +475,7 @@
     if (!cfg) { ana.sec = 'barang'; return anaRoute(); }
     if (cfg.tgl && !own.tgl) own.tgl = hariIni();
     if (cfg.hari && cfg.hari.indexOf(own.hari) < 0) own.hari = cfg.hari[1] || cfg.hari[0];
-    view('<header class="hd"><h1>' + esc(cfg.judul) + '</h1>' + anaNav(k) +
+    view('<header class="hd"><h1>Laporan Manager</h1><div class="sub">' + esc(cfg.judul) + '</div>' + anaNav(k) +
       '<div class="sub">' + esc(cfg.ket) + '</div><div class="chips" id="of"></div><div class="chips" id="ow"></div></header>' +
       '<section class="body" id="r">' + skel(3) + '</section>');
     anaBind();
@@ -745,12 +770,22 @@
   if (KEY) getWhs().catch(function () {});
   /* cek notifikasi: saat app dibuka, saat kembali ke app, dan tiap 5 menit selama app terbuka */
   notifFetch(true);
-  /* siapkan Monitoring PO di belakang layar supaya menu PO langsung tampil */
-  setTimeout(function () {
-    if (!sess) return; var args = {mode: 'buka', q: '', wh: 'ALL', sales: ''}, key = 'po:' + JSON.stringify(args);
-    rpc('po.sales', args).then(function (d) { CS.set(key, d); }).catch(function () {});
-  }, 1200);
+  /* Monitoring PO dipanggil saat menunya dibuka; tidak membebani halaman publik. */
   setInterval(function () { if (document.visibilityState === 'visible') notifFetch(true); }, 300000);
   document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') notifFetch(false); });
+  /* Sinkron otomatis hanya pada layar yang sedang dibuka dan terlihat; tanpa pindah halaman. */
+  var wtLastRefresh = Date.now();
+  function wtRefreshAktif() {
+    var v = curView, ms = v === 'analisa' ? 300000 : 90000;
+    if (document.visibilityState !== 'visible' || Date.now() - wtLastRefresh < ms) return;
+    if (v !== 'lacak' && v !== 'stok' && v !== 'po' && v !== 'analisa') return;
+    if ((v === 'po' || v === 'analisa') && !sess) return;
+    if (v === 'lacak' && String(sessionStorage.getItem('wt_q') || '').length < 3) return;
+    if (v === 'stok' && String(sessionStorage.getItem('wt_sq') || '').length < 2) return;
+    if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    wtLastRefresh = Date.now(); V[v]();
+  }
+  setInterval(wtRefreshAktif, 30000);
+  document.addEventListener('visibilitychange', wtRefreshAktif);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
 })();

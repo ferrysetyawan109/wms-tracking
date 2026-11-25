@@ -1,7 +1,7 @@
 {
   "name": "WMS Tracking - Wahana Safety Indonesia",
   "short_name": "WMS Tracking",
-  "description": "Lacak pesanan, cek stok, monitoring PO, dan analisa barang PT Wahana Safety Indonesia",
+  "description": "Lacak pesanan, cek stok, monitoring PO, dan laporan manager PT Wahana Safety Indonesia",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
